@@ -1,10 +1,13 @@
-default: all
+all: build install
 
-.DEFAULT:
-	cd src && $(MAKE) $@
+build:
+	make -C src
+	echo "build done"
 
-install:
-	cd src && $(MAKE) $@
+install: build
+	mkdir -pv target
+	mv src/como target
+	echo "install done"
 
-.PHONY: install
-
+clean:
+	rm -rvf target 
