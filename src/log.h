@@ -1,5 +1,5 @@
 /*
- como.c
+ log.h
  como
  
  BSD 2-Clause License
@@ -27,16 +27,64 @@
  CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
  OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-*/
+ */
 
-#include "como.h"
-#include "glib.h"
-#include "log.h"
+#ifndef log_h
+#define log_h
 
-int main(int argc, char **argv)
+#include <stdio.h>
+#include <stdarg.h>
+
+#define LOG_LEV_DEBUG   1
+#define LOG_LEV_INFO    2
+#define LOG_LEV_WARN    3
+#define LOG_LEV_ERROR   4
+#define LOG_LEV_FATAL   5
+
+
+static inline void log_vformat(int level, const char *fmt, va_list args)
 {
-    log_info("hello como\n");
-    log_info("glib version [%d.%d.%d]\n",GLIB_MAJOR_VERSION,GLIB_MINOR_VERSION,GLIB_MICRO_VERSION);
-
-    return 0;
+    vprintf(fmt,args);
 }
+
+static inline void log_debug(const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap,fmt);
+    log_vformat(LOG_LEV_DEBUG, fmt, ap);
+    va_end(ap);
+}
+
+static inline void log_info(const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap,fmt);
+    log_vformat(LOG_LEV_INFO, fmt, ap);
+    va_end(ap);
+}
+
+static inline void log_warn(const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap,fmt);
+    log_vformat(LOG_LEV_WARN, fmt, ap);
+    va_end(ap);
+}
+
+static inline void log_error(const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap,fmt);
+    log_vformat(LOG_LEV_ERROR, fmt, ap);
+    va_end(ap);
+}
+
+static inline void log_fatal(const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap,fmt);
+    log_vformat(LOG_LEV_FATAL, fmt, ap);
+    va_end(ap);
+}
+
+#endif /* log_h */
