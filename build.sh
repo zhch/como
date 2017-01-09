@@ -14,6 +14,12 @@ make clean
 make
 make install
 
+echo "going to build libev"
+cd ${dir_name}/lib/libev/libev-4.24
+./configure
+make
+make install
+
 #######################
 #build como
 #######################
