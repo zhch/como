@@ -10,7 +10,7 @@ echo "going to build glib"
 cd ${dir_name}/lib/glib/glib-2.50.2
 pwd
 make clean
-./configure --prefix=${dir_name}/lib/glib --disable-libmount --with-pcre
+./autogen.sh  --prefix=${dir_name}/lib/glib --disable-libmount --with-pcre
 make
 make install
 
