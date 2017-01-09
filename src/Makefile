@@ -7,7 +7,8 @@ WARN=-Wall -W
 
 PREFIX=../lib
 
-INCLUDE=-I.
+INCLUDE=-I. \
+	-I${PREFIX}/glib/lib/glib-2.0/include -I${PREFIX}/glib/include/glib-2.0
 
 all:como
 	@echo ""

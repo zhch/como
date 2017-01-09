@@ -30,10 +30,13 @@
 */
 
 #include "como.h"
+#include "glib.h"
 #include <stdio.h>
 
 int main(int argc, char **argv)
 {
     printf("hello como\n");
+    printf("glib version [%d.%d.%d]\n",GLIB_MAJOR_VERSION,GLIB_MINOR_VERSION,GLIB_MICRO_VERSION);
+
     return 0;
 }
