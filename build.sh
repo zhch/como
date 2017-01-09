@@ -8,8 +8,8 @@ echo "going to build libs"
 
 echo "going to build libev"
 cd ${dir_name}/lib/libev/libev-4.24
-./configure
-make --prefix=${dir_name}/lib/libev
+./configure --prefix=${dir_name}/lib/libev
+make
 make install
 
 echo "going to build glib"
