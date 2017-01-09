@@ -29,16 +29,18 @@
  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+#include <glib.h>
+#include <ev.h>
+
 #include "como.h"
-#include "glib.h"
 #include "log.h"
 #include "mm.h"
-
 
 int main(int argc, char **argv)
 {
     log_info("hello como\n");
     log_info("glib version [%d.%d.%d]\n",GLIB_MAJOR_VERSION,GLIB_MINOR_VERSION,GLIB_MICRO_VERSION);
-
+    log_info("libev version [%d.%d]\n",ev_version_major (), ev_version_minor ());
+    
     return 0;
 }

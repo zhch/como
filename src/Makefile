@@ -8,7 +8,12 @@ WARN=-Wall -W
 PREFIX=../lib
 
 INCLUDE=-I. \
-	-I${PREFIX}/glib/lib/glib-2.0/include -I${PREFIX}/glib/include/glib-2.0
+	-I${PREFIX}/glib/lib/glib-2.0/include -I${PREFIX}/glib/include/glib-2.0 \
+    -I${PREFIX}/libev/include
+
+LIB=-lpthread -lz -lrt \
+    ${PREFIX}/libev/lib/libev.a \
+    -L${PREFIX}/glib/lib  -lm -lglib-2.0
 
 all:como
 	@echo ""
