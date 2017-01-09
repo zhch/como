@@ -1,5 +1,5 @@
 /*
- como.c
+ mm.h
  como
  
  BSD 2-Clause License
@@ -27,18 +27,29 @@
  CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
  OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-*/
+ */
+#ifndef mm_h
+#define mm_h
 
-#include "como.h"
-#include "glib.h"
-#include "log.h"
-#include "mm.h"
+#include <stdlib.h>
 
-
-int main(int argc, char **argv)
+static inline void *mm_malloc (size_t size)
 {
-    log_info("hello como\n");
-    log_info("glib version [%d.%d.%d]\n",GLIB_MAJOR_VERSION,GLIB_MINOR_VERSION,GLIB_MICRO_VERSION);
-
-    return 0;
+    return malloc (size);
 }
+
+static inline void *mm_malloc0(size_t size)
+{
+    return calloc(1, size);
+}
+
+static inline void mm_free(void *ptr)
+{
+    free(ptr);
+}
+
+static inline void *mm_realloc(void *ptr, size_t new_size)
+{
+    return realloc (ptr, new_size);
+}
+#endif /* mm_h */
