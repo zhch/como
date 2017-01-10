@@ -34,6 +34,7 @@
 
 #include <stdio.h>
 #include <stdarg.h>
+#include <stdbool.h>
 
 #define LOG_LEV_DEBUG   1
 #define LOG_LEV_INFO    2
@@ -41,6 +42,10 @@
 #define LOG_LEV_ERROR   4
 #define LOG_LEV_FATAL   5
 
+static inline bool log_enabled(int level)
+{
+    return true;
+}
 
 static inline void log_vformat(int level, const char *fmt, va_list args)
 {
@@ -49,42 +54,57 @@ static inline void log_vformat(int level, const char *fmt, va_list args)
 
 static inline void log_debug(const char *fmt, ...)
 {
-    va_list ap;
-    va_start(ap,fmt);
-    log_vformat(LOG_LEV_DEBUG, fmt, ap);
-    va_end(ap);
+    if(log_enabled(LOG_LEV_DEBUG))
+    {
+        va_list ap;
+        va_start(ap,fmt);
+        log_vformat(LOG_LEV_DEBUG, fmt, ap);
+        va_end(ap);
+    }
 }
 
 static inline void log_info(const char *fmt, ...)
 {
-    va_list ap;
-    va_start(ap,fmt);
-    log_vformat(LOG_LEV_INFO, fmt, ap);
-    va_end(ap);
+    if(log_enabled(LOG_LEV_INFO))
+    {
+        va_list ap;
+        va_start(ap,fmt);
+        log_vformat(LOG_LEV_INFO, fmt, ap);
+        va_end(ap);
+    }
 }
 
 static inline void log_warn(const char *fmt, ...)
 {
-    va_list ap;
-    va_start(ap,fmt);
-    log_vformat(LOG_LEV_WARN, fmt, ap);
-    va_end(ap);
+    if(log_enabled(LOG_LEV_WARN))
+    {
+        va_list ap;
+        va_start(ap,fmt);
+        log_vformat(LOG_LEV_WARN, fmt, ap);
+        va_end(ap);
+    }
 }
 
 static inline void log_error(const char *fmt, ...)
 {
-    va_list ap;
-    va_start(ap,fmt);
-    log_vformat(LOG_LEV_ERROR, fmt, ap);
-    va_end(ap);
+    if(log_enabled(LOG_LEV_ERROR))
+    {
+        va_list ap;
+        va_start(ap,fmt);
+        log_vformat(LOG_LEV_ERROR, fmt, ap);
+        va_end(ap);
+    }
 }
 
 static inline void log_fatal(const char *fmt, ...)
 {
-    va_list ap;
-    va_start(ap,fmt);
-    log_vformat(LOG_LEV_FATAL, fmt, ap);
-    va_end(ap);
+    if(log_enabled(LOG_LEV_FATAL))
+    {
+        va_list ap;
+        va_start(ap,fmt);
+        log_vformat(LOG_LEV_FATAL, fmt, ap);
+        va_end(ap);
+    }
 }
 
 #endif /* log_h */
