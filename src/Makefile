@@ -20,7 +20,7 @@ all:como
 	@echo "Build como done"
 	@echo ""
 
-como:como.o
+como:como.o resp.o
 	$(CC) $^  $(LIB)  -o $@
 	rm -rvf *.o
 

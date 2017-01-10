@@ -1,5 +1,5 @@
 /*
- como.c
+ resp.h
  como
  
  BSD 2-Clause License
@@ -27,28 +27,15 @@
  CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
  OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-*/
+ */
 
-#include <glib.h>
-#include <ev.h>
+#ifndef resp_h
+#define resp_h
 
-#include "como.h"
-#include "log.h"
-#include "mm.h"
-#include "resp.h"
 
-int main(int argc, char **argv)
-{
-    log_info("hello como\n");
-    log_info("glib version [%d.%d.%d]\n",GLIB_MAJOR_VERSION,GLIB_MINOR_VERSION,GLIB_MICRO_VERSION);
-    log_info("libev version [%d.%d]\n",ev_version_major (), ev_version_minor ());
-    
-    RESPServer *srv = resp_new_server(1234,3);
-    log_debug("resp_new_server done\n");
-    
-    log_debug("resp server started\n");
-    resp_server_start(srv);
-    log_debug("resp server exit\n");
+typedef  struct resp_server RESPServer;
 
-    return 0;
-}
+RESPServer *resp_new_server(int port, int readers);
+void resp_server_start(RESPServer *srv);
+
+#endif /* resp_h */
