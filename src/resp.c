@@ -56,11 +56,15 @@ typedef struct resp_reader_task RESPReaderTask;
 struct resp_client
 {
     RESPReader *reader;
-    
     int fd;
     struct sockaddr_in *add;
-    
     ev_io watcher;
+    
+    char *buff_in;
+    size_t buff_in_cap;
+    off_t buff_in_head;
+    off_t buff_in_tail;
+    
 };
 
 struct resp_reader_task
@@ -72,8 +76,11 @@ struct resp_reader_task
 
 struct resp_reader
 {
+    char *name;
+    
     RESPServer *srv;
     struct ev_loop *loop;
+    GThread *thread;
     
     GHashTable *clients;
     
@@ -156,14 +163,24 @@ static RESPReaderTask *reader_task_new(RESPReaderTaskType type, void *data, size
 
 static void client_cb_read(struct ev_loop *loop, struct ev_io *watcher, int revents)
 {
+    RESPClient *client = (RESPClient *)(watcher->data);
+    ssize_t read_count = read(client->fd, client->buff_in, client->buff_in_cap - 1);
+    client->buff_in[read_count] = '\0';
+    log_debug("client_cb_read [%s]",client->buff_in);
 }
 
 static void reader_task_new_client(void *data, size_t data_len)
 {
     RESPClient *client = (RESPClient *)data;
     
+    client->buff_in_cap = 1024;
+    client->buff_in_head = 0;
+    client->buff_in_tail = 0;
+    client->buff_in = (char *)mm_malloc(client->buff_in_cap);
+    
     ev_io_init(&(client->watcher), client_cb_read, client->fd, EV_READ);
     ev_io_start(client->reader->loop, &(client->watcher));
+    client->watcher.data = client;
     
     g_hash_table_add (client->reader->clients,client);
 }
@@ -190,6 +207,13 @@ void reader_cb_task(struct ev_loop *loop, ev_async * watcher, int revents)
         mm_free(task);
         task = (RESPReaderTask *)g_queue_pop_head (reader->task_queue);
     }
+}
+
+gpointer reader_loop (gpointer data)
+{
+    RESPReader *reader = (RESPReader *)data;
+    do{}while(ev_run(reader->loop, 0));
+    return NULL;
 }
 
 void accept_cb(struct ev_loop *loop, struct ev_io *watcher, int revents)
@@ -235,6 +259,7 @@ RESPServer *resp_new_server(int port, int readers)
     result->readers = (RESPReader *)mm_malloc(sizeof(RESPReader) * result->reader_num);
     for(int i = 0; i<(result->reader_num); i++)
     {
+        result->readers[i].name = g_strdup_printf("resp[%d]:reader[%d]", srv->port, i);
         result->readers[i].srv = result;
         result->readers[i].loop = ev_loop_new(EVFLAG_AUTO);
         result->readers[i].task_queue = g_queue_new();
@@ -243,6 +268,7 @@ RESPServer *resp_new_server(int port, int readers)
 
     return result;
 }
+
 
 void resp_server_start(RESPServer *srv)
 {
@@ -253,6 +279,7 @@ void resp_server_start(RESPServer *srv)
         ev_async_init(&(srv->readers[i].notifier), reader_cb_task);
         ev_async_start(srv->readers[i].loop, &(srv->readers[i].notifier));
         srv->readers[i].notifier.data = &(srv->readers[i]);
+        srv->readers[i].thread = g_thread_new (srv->readers[i].name, reader_loop, &(srv->readers[i]));
     }
 
     ev_io_init(&(srv->list_watcher), accept_cb, srv->list_fd, EV_READ);
