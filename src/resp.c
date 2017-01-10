@@ -34,6 +34,7 @@
 #include "log.h"
 
 #include <ev.h>
+#include <glib.h>
 
 #include <unistd.h>
 #include <fcntl.h>
@@ -46,14 +47,39 @@
 #include <stdbool.h>
 #include <errno.h>
 
-typedef struct resp_reader
+typedef struct resp_client RESPClient;
+
+typedef struct resp_reader RESPReader;
+typedef enum resp_reader_task_type{NEW_CLIENT} RESPReaderTaskType;
+typedef struct resp_reader_task RESPReaderTask;
+
+struct resp_client
+{
+    RESPReader *reader;
+    
+    int fd;
+    struct sockaddr_in *add;
+    
+    ev_io watcher;
+};
+
+struct resp_reader_task
+{
+    RESPReaderTaskType type;
+    void *data;
+    size_t data_len;
+};
+
+struct resp_reader
 {
     RESPServer *srv;
     struct ev_loop *loop;
     
+    GHashTable *clients;
     
-    
-}RESPReader;
+    ev_async notifier;
+    GQueue *task_queue;
+};
 
 struct resp_server
 {
@@ -64,6 +90,7 @@ struct resp_server
     ev_io list_watcher;
     
     int reader_num;
+    int read_ptr;
     RESPReader *readers;
 };
 
@@ -118,34 +145,82 @@ int net_accept(int listen_fd, struct sockaddr_in *client_add)
     return accept(listen_fd, (struct sockaddr *)client_add, (socklen_t*)(&add_len));
 }
 
-void callback_accept(struct ev_loop *loop, struct ev_io *watcher, int revents)
+static RESPReaderTask *reader_task_new(RESPReaderTaskType type, void *data, size_t data_len)
 {
+    RESPReaderTask *result = (RESPReaderTask *)mm_malloc(sizeof(RESPReaderTask));
+    result->type = type;
+    result->data = data;
+    result->data_len = data_len;
+    return result;
+}
+
+static void client_cb_read(struct ev_loop *loop, struct ev_io *watcher, int revents)
+{
+}
+
+static void reader_task_new_client(void *data, size_t data_len)
+{
+    RESPClient *client = (RESPClient *)data;
+    
+    ev_io_init(&(client->watcher), client_cb_read, client->fd, EV_READ);
+    ev_io_start(client->reader->loop, &(client->watcher));
+    
+    g_hash_table_add (client->reader->clients,client);
+}
+
+static RESPClient *client_new(RESPReader *reader, int fd, struct sockaddr_in *add)
+{
+    RESPClient *result = (RESPClient *)mm_malloc(sizeof(RESPClient));
+    result->reader = reader;
+    result->fd = fd;
+    result->add = add;
+    return result;
+}
+
+void reader_cb_task(struct ev_loop *loop, ev_async * watcher, int revents)
+{
+    RESPReader *reader = (RESPReader *)watcher->data;
+    RESPReaderTask *task = (RESPReaderTask *)g_queue_pop_head (reader->task_queue);
+    while(task != NULL)
+    {
+        if(task->type == NEW_CLIENT)
+        {
+            reader_task_new_client(task->data, task->data_len);
+        }
+        mm_free(task);
+        task = (RESPReaderTask *)g_queue_pop_head (reader->task_queue);
+    }
+}
+
+void accept_cb(struct ev_loop *loop, struct ev_io *watcher, int revents)
+{
+    RESPServer *srv = (RESPServer *)(watcher->data);
+
     if(EV_ERROR & revents)
     {
         log_error("accept error events [%d], msg: [%s]",revents, strerror(errno));
         return;
     }
-    
-    RESPServer *srv = (RESPServer *)(watcher->data);
 
-    struct sockaddr_in client_add;
-    int  client_fd = net_accept(srv->list_fd, &client_add);
-    if(net_set_socket_addr_reuse(client_fd) == false)
-    {
-        log_warn("set client socket reuse failed");
-    }
+    struct sockaddr_in *client_add = (struct sockaddr_in *)mm_malloc(sizeof(struct sockaddr_in));
+    int  client_fd = net_accept(srv->list_fd, client_add);
     if (client_fd < 0)
     {
         log_error("accept failed [%s]",strerror(errno));
         return;
     }
-    log_debug("client [%s] connected",inet_ntoa(client_add.sin_addr));
+    if(net_set_socket_addr_reuse(client_fd) == false)
+    {
+        log_warn("set client socket reuse failed");
+    }
 
-    ev_io *client_watcher = (ev_io*) mm_malloc(sizeof(struct ev_io));
+    log_debug("client [%s:%d] connected",inet_ntoa(client_add->sin_addr),client_add->sin_port);
 
-    
-//    ev_io_init(client_watcher, read_cb, client_fd, EV_READ);
-//    ev_io_start(loop, w_client);
+    RESPClient *client = client_new(&(srv->readers[(srv->read_ptr)++]), client_fd, client_add);
+    RESPReaderTask *task = reader_task_new(NEW_CLIENT, client, 0);
+    g_queue_push_tail (client->reader->task_queue, task);
+
+    ev_async_send(client->reader->loop, &(client->reader->notifier));
 }
 
 RESPServer *resp_new_server(int port, int readers)
@@ -154,6 +229,7 @@ RESPServer *resp_new_server(int port, int readers)
     result->port = port;
     result->loop = ev_loop_new(EVFLAG_AUTO);
     result->list_fd = -1;
+    result->list_watcher.data = result;
     
     result->reader_num = readers;
     result->readers = (RESPReader *)mm_malloc(sizeof(RESPReader) * result->reader_num);
@@ -161,6 +237,8 @@ RESPServer *resp_new_server(int port, int readers)
     {
         result->readers[i].srv = result;
         result->readers[i].loop = ev_loop_new(EVFLAG_AUTO);
+        result->readers[i].task_queue = g_queue_new();
+        result->readers[i].clients = g_hash_table_new(g_direct_hash, g_direct_equal);
     }
 
     return result;
@@ -169,13 +247,17 @@ RESPServer *resp_new_server(int port, int readers)
 void resp_server_start(RESPServer *srv)
 {
     srv->list_fd = net_listen(srv->port, 5);
-    srv->list_watcher.data = srv;
+    
+    for(int i = 0; i<(srv->reader_num); i++)
+    {
+        ev_async_init(&(srv->readers[i].notifier), reader_cb_task);
+        ev_async_start(srv->readers[i].loop, &(srv->readers[i].notifier));
+        srv->readers[i].notifier.data = &(srv->readers[i]);
+    }
 
-    ev_io_init(&(srv->list_watcher), callback_accept, srv->list_fd, EV_READ);
+    ev_io_init(&(srv->list_watcher), accept_cb, srv->list_fd, EV_READ);
     ev_io_start(srv->loop, &(srv->list_watcher));
     
-    do
-    {
-        
-    }while(ev_run (srv->loop, 0));
+    srv->read_ptr = 0;
+    do{}while(ev_run (srv->loop, 0));
 }
