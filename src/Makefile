@@ -1,7 +1,7 @@
 uname_S := $(shell sh -c 'uname -s 2>/dev/null || echo not')
 
 CC=gcc
-CFLAG=-O2 -std=c99 -pedantic  
+CFLAG=-O0 -std=c99 -pedantic -ggdb
 
 WARN=-Wall -W
 
