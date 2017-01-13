@@ -37,13 +37,26 @@
 #include "mm.h"
 #include "resp.h"
 
+void cmd_proc(RESPConnection *con, RESPCommand *cmd)
+{
+    printf("--------zc:cmd of [%lu] args processed\n", resp_cmd_get_args_count(cmd));
+    char **vals= (char **)mm_malloc(sizeof(char *) * resp_cmd_get_args_count(cmd));
+    size_t *val_lens = (size_t *)mm_malloc(sizeof(size_t) * resp_cmd_get_args_count(cmd));
+    for(int i = 0; i<resp_cmd_get_args_count(cmd); i++)
+    {
+        vals[i] = resp_cmd_get_arg(cmd, i);
+        val_lens[i] = resp_cmd_get_arg_len(cmd, i);
+    }
+    resp_reply_list(con, vals, val_lens, resp_cmd_get_args_count(cmd));
+}
+
 int main(int argc, char **argv)
 {
     log_info("hello como\n");
     log_info("glib version [%d.%d.%d]\n",GLIB_MAJOR_VERSION,GLIB_MINOR_VERSION,GLIB_MICRO_VERSION);
     log_info("libev version [%d.%d]\n",ev_version_major (), ev_version_minor ());
     
-    RESPServer *srv = resp_new_server(1234,3);
+    RESPServer *srv = resp_new_server(1234, cmd_proc, 1);
     log_debug("resp_new_server done\n");
     
     log_debug("resp server started\n");

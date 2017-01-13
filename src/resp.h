@@ -32,10 +32,21 @@
 #ifndef resp_h
 #define resp_h
 
+#include <sys/types.h>
 
 typedef  struct resp_server RESPServer;
+typedef struct resp_conn RESPConnection;
+typedef struct resp_cmd RESPCommand;
 
-RESPServer *resp_new_server(int port, int readers);
+typedef void RESPCommandProcess(RESPConnection *con, RESPCommand *cmd);
+
+RESPServer *resp_new_server(int port, RESPCommandProcess *proc, int readers);
 void resp_server_start(RESPServer *srv);
+
+void resp_reply_list(RESPConnection *con, char **vals, size_t *v_sizes, size_t val_num);
+
+size_t resp_cmd_get_args_count(RESPCommand *cmd);
+char *resp_cmd_get_arg(RESPCommand *cmd, off_t index);
+ssize_t resp_cmd_get_arg_len(RESPCommand *cmd, off_t index);
 
 #endif /* resp_h */

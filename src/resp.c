@@ -35,10 +35,10 @@
 
 #include <ev.h>
 #include <glib.h>
+#include <glib/gprintf.h>
 
 #include <unistd.h>
 #include <fcntl.h>
-#include <sys/types.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <netinet/tcp.h>
@@ -61,9 +61,18 @@ typedef enum resp_protocol_status
 typedef enum resp_reader_task_type{NEW_CLIENT} RESPReaderTaskType;
 typedef struct resp_reader RESPReader;
 typedef struct resp_reader_task RESPReaderTask;
+typedef struct resp_client_buff RESPClientBuffer;
 
-typedef struct resp_cmd RESPCommand;
-
+struct resp_client_buff
+{
+    char *buff;
+    size_t global_offset;
+    size_t free_global;
+    size_t cap;
+    off_t head;
+    off_t tail;
+    off_t parse;
+};
 
 struct resp_client
 {
@@ -72,24 +81,34 @@ struct resp_client
     struct sockaddr_in *add;
     ev_io watcher;
     
-    char *buff_in;
-    size_t buff_in_cap;
-    off_t buff_in_free;
-    off_t buff_in_head;
-    off_t buff_in_tail;
-    off_t buff_in_parse;
+    RESPClientBuffer *buff_in;
+    RESPClientBuffer *buff_in_back;
 
     RESPProtocolStatus pro_status;
     RESPCommand *pro_cmd;
+    
+    GQueue *req_queue;
+};
+
+struct resp_conn
+{
+    RESPClient *client;
+    RESPCommand *cmd;
 };
 
 struct resp_cmd
 {
     size_t args_cap;
     size_t args_count;
-    char **args;
+    size_t *arg_global_offsets;
     size_t *arg_lens;
     off_t arg_ptr;
+    
+    char *reply;
+    size_t reply_cap;
+    size_t reply_size;
+    
+    RESPConnection conn;
 };
 
 struct resp_reader_task
@@ -121,6 +140,7 @@ struct resp_server
 {
     int port;
     struct ev_loop *loop;
+    RESPCommandProcess *proc;
     
     int list_fd;
     ev_io list_watcher;
@@ -130,7 +150,8 @@ struct resp_server
     RESPReader *readers;
 };
 
-static RESPCommand *reader_get_cmd_strut(RESPReader *reader, size_t min_cap);
+static RESPCommand *reader_get_cmd_stru(RESPReader *reader, RESPClient *client, size_t min_cap);
+static void reader_return_cmd_stru(RESPReader *reader, RESPCommand *cmd);
 
 
 
@@ -186,7 +207,51 @@ int net_accept(int listen_fd, struct sockaddr_in *client_add)
     return accept(listen_fd, (struct sockaddr *)client_add, (socklen_t*)(&add_len));
 }
 
+static void cmd_serialize_list(RESPCommand *cmd, char **vals, size_t *v_sizes, size_t val_num)
+{
+    int total_len = 0;
+    for(int i = 0; i<val_num; i++)
+    {
+        total_len += v_sizes[i] + 50;
+    }
+    total_len += 50;
+    
+    if((cmd->reply_cap) < total_len)
+    {
+        while((cmd->reply_cap) < total_len)
+        {
+            if(cmd->reply_cap == 0)
+            {
+                cmd->reply_cap = 64;
+            }
+            else
+            {
+                (cmd->reply_cap) *= 2;
+            }
+        }
+        mm_free(cmd->reply);
+        mm_malloc(cmd->reply_cap);
+    }
 
+    int ptr = 0;
+    ptr += g_sprintf ((cmd->reply)+ptr, "*%d\r\n", val_num);
+    for(int i = 0; i<val_num; i++)
+    {
+        if(vals[i] == NULL)
+        {
+            ptr += g_sprintf ((cmd->reply)+ptr, "$-1\r\n");
+        }
+        else
+        {
+            ptr += g_sprintf ((cmd->reply)+ptr, "$%d\r\n", v_sizes[i]);
+            memcpy((cmd->reply)+ptr, vals[i], v_sizes[i]);
+            ptr += v_sizes[i];
+            (cmd->reply)[ptr++] = '\r';
+            (cmd->reply)[ptr++] = '\n';
+        }
+    }
+    cmd->reply_size = ptr;
+}
 
 static RESPClient *client_new(RESPReader *reader, int fd, struct sockaddr_in *add)
 {
@@ -197,62 +262,98 @@ static RESPClient *client_new(RESPReader *reader, int fd, struct sockaddr_in *ad
     return result;
 }
 
+static inline char *client_buff_in_init(RESPClient *client)
+{
+    client->buff_in = (RESPClientBuffer *)mm_malloc(sizeof(RESPClientBuffer));
+    client->buff_in->global_offset = 0;
+    client->buff_in->cap = 1024;
+    client->buff_in->head = 0;
+    client->buff_in->tail = 0;
+    client->buff_in->free_global = 0;
+    client->buff_in->buff = (char *)mm_malloc(client->buff_in->cap);
+    
+    client->buff_in_back = NULL;
+}
+
+static inline bool client_buff_in_compact(RESPClient *client)
+{
+    if(client->buff_in_back == NULL)
+    {
+        client->buff_in_back = (RESPClientBuffer *)mm_malloc(sizeof(RESPClientBuffer));
+        client->buff_in_back->cap = client->buff_in->cap;
+        client->buff_in_back->buff = (char *)mm_malloc(client->buff_in_back->cap);
+    }
+    
+    if((client->buff_in_back->cap) < (client->buff_in->tail - client->buff_in->free_global + client->buff_in->global_offset))
+    {
+        while((client->buff_in_back->cap) < (client->buff_in->tail - client->buff_in->free_global + client->buff_in->global_offset))
+        {
+            (client->buff_in_back->cap) *= 2;
+        }
+        mm_free(client->buff_in_back->buff);
+        client->buff_in_back->buff = (char *)mm_malloc(client->buff_in_back->cap);
+    }
+    
+    off_t copy_offset = (client->buff_in->free_global) - (client->buff_in->global_offset);
+    memcpy(client->buff_in_back->buff, (client->buff_in->buff) + copy_offset, (client->buff_in->tail) - copy_offset);
+
+    client->buff_in_back->global_offset = client->buff_in->free_global;
+    client->buff_in_back->free_global = client->buff_in->free_global;
+    client->buff_in_back->head = 0;
+    client->buff_in_back->tail = ((client->buff_in->tail) - copy_offset);
+    client->buff_in_back->parse = client->buff_in->parse - copy_offset;
+    
+    RESPClientBuffer *tmp = client->buff_in;
+    client->buff_in = client->buff_in_back;
+    client->buff_in_back = tmp;
+}
+
 static inline bool client_buff_in_expand(RESPClient *client, size_t min_cap)
 {
-    if(min_cap > client->buff_in_cap)
+    if(min_cap > (client->buff_in->cap))
     {
-        while((client->buff_in_cap) < min_cap)
+        while((client->buff_in->cap) < min_cap)
         {
-            (client->buff_in_cap) *= 2;
+            (client->buff_in->cap) *= 2;
         }
-        
-        char *old_buff = client->buff_in;
-        client->buff_in = mm_malloc(client->buff_in_cap);
-        memcpy(client->buff_in, old_buff + (client->buff_in_free), (client->buff_in_tail) - (client->buff_in_free));
-        (client->buff_in_tail) = (client->buff_in_tail) - (client->buff_in_free);
-        (client->buff_in_head) = (client->buff_in_head) - (client->buff_in_free);
-        client->buff_in_free = 0;
-        mm_free(old_buff);
         return true;
     }
     return false;
 }
-static inline char *client_buff_in_init(RESPClient *client)
-{
-    client->buff_in_cap = 1024;
-    client->buff_in_free = 0;
-    client->buff_in_head = 0;
-    client->buff_in_tail = 0;
-    client->buff_in = (char *)mm_malloc(client->buff_in_cap);
-}
 
 static inline char *client_buff_in_tail(RESPClient *client)
 {
-    return (client->buff_in) + (client->buff_in_tail);
+    return (client->buff_in->buff) + (client->buff_in->tail);
 }
 
 static inline size_t client_buff_in_space(RESPClient *client)
 {
-    return (client->buff_in_cap) - (client->buff_in_tail);
+    return (client->buff_in->cap) - (client->buff_in->tail);
 }
 
 static inline size_t client_buff_in_len(RESPClient *client)
 {
-    return (client->buff_in_tail) - (client->buff_in_head);
+    return (client->buff_in->tail) - (client->buff_in->head);
 }
 
 static inline off_t client_buff_in_tail_incr(RESPClient *client, off_t incr)
 {
-    (client->buff_in_tail) += incr;
+    (client->buff_in->tail) += incr;
+}
+
+static void client_buff_in_set_free_global(RESPClient *client, size_t free_global)
+{
+    client->buff_in->free_global = free_global;
 }
 
 static RESPCommand *client_buff_in_process(RESPClient *client)
 {
-    char *buff = client->buff_in;
-    off_t tail = client->buff_in_tail;
+    char *buff = client->buff_in->buff;
+    off_t tail = client->buff_in->tail;
+    size_t global_offset0 = client->buff_in->global_offset;
 
-    off_t head = client->buff_in_head;
-    off_t parse = client->buff_in_parse;
+    off_t head = client->buff_in->head;
+    off_t parse = client->buff_in->parse;
     RESPProtocolStatus status = client->pro_status;
     RESPCommand *cmd = client->pro_cmd;
     
@@ -284,7 +385,7 @@ static RESPCommand *client_buff_in_process(RESPClient *client)
             if(buff[head] == '\n')
             {
                 size_t args_count = g_ascii_strtoull (buff+parse, NULL, 10);
-                cmd = reader_get_cmd_strut(client->reader, args_count);
+                cmd = reader_get_cmd_stru(client->reader, client, args_count);
                 cmd->args_count = args_count;
                 cmd->arg_ptr = 0;
                 head++;
@@ -323,7 +424,7 @@ static RESPCommand *client_buff_in_process(RESPClient *client)
             {
                 status = ARG;
                 head++;
-                cmd->args[cmd->arg_ptr] = buff + head;
+                cmd->arg_global_offsets[cmd->arg_ptr] = global_offset0 + head;
             }
             else
             {
@@ -334,7 +435,7 @@ static RESPCommand *client_buff_in_process(RESPClient *client)
         {
             if(buff[head] == '\r')
             {
-                if((head - (cmd->args[cmd->arg_ptr] - buff)) == cmd->arg_lens[cmd->arg_ptr])
+                if(((head+global_offset0) - cmd->arg_global_offsets[cmd->arg_ptr]) == cmd->arg_lens[cmd->arg_ptr])
                 {
                     (cmd->arg_ptr)++;
                     status = ARG_LF;
@@ -372,10 +473,29 @@ static RESPCommand *client_buff_in_process(RESPClient *client)
         }
     }
     
-    client->buff_in_head = head;
-    client->buff_in_parse = parse;
+    client->buff_in->head = head;
+    client->buff_in->parse = parse;
     client->pro_status = status;
     client->pro_cmd = cmd;
+}
+
+static void client_flush_cmd_replies(RESPClient *client)
+{
+    RESPCommand *cmd = (RESPCommand *)g_queue_peek_head (client->req_queue);
+    while(cmd != NULL && (cmd->reply_size) > 0)
+    {
+        cmd = (RESPCommand *)g_queue_pop_head (client->req_queue);
+        ssize_t write_result = write(client->fd, cmd->reply, cmd->reply_size);
+        if(write_result < 0)
+        {
+            log_error("try to write [%lu] bytes of reply failed, return=[%ld], msg=[%s]",cmd->reply_size,write_result,strerror(errno));
+        }
+        
+        client_buff_in_set_free_global(client, cmd->arg_global_offsets[cmd->args_count - 1] + cmd->arg_lens[cmd->args_count - 1] + 2);
+        
+        reader_return_cmd_stru(client->reader, cmd);
+        cmd = (RESPCommand *)g_queue_peek_head (client->req_queue);
+    }
 }
 
 static void client_cb_read(struct ev_loop *loop, struct ev_io *watcher, int revents)
@@ -386,11 +506,15 @@ static void client_cb_read(struct ev_loop *loop, struct ev_io *watcher, int reve
     {
         if(client_buff_in_space(client) == 0)
         {
-            client_buff_in_expand(client, (client->buff_in_cap) * 2);
+            client_buff_in_compact(client);
         }
+        if(client_buff_in_space(client) == 0)
+        {
+            client_buff_in_expand(client, (client->buff_in->cap) * 2);
+        }
+        
         ssize_t read_count = read(client->fd, client_buff_in_tail(client), client_buff_in_space(client));
         client_buff_in_tail_incr(client, read_count);
-        printf("-------zc: buff [%s], head [%d], tail [%d]\n",client->buff_in,client->buff_in_head, client->buff_in_tail);
         
         if(client_buff_in_len(client) > 0)
         {
@@ -399,21 +523,27 @@ static void client_cb_read(struct ev_loop *loop, struct ev_io *watcher, int reve
             
             if(client->pro_status == REQ_READY)
             {
-                printf("--------zc:cmd of [%d] args processed\n",client->pro_cmd->args_count);
+                client->pro_cmd->reply_size = 0;
+                g_queue_push_tail (client->req_queue, client->pro_cmd);
+                (*(client->reader->srv->proc))(&(client->pro_cmd->conn), client->pro_cmd);
                 client->pro_cmd = NULL;
                 client->pro_status = REQ_STAR;
             }
-            
+            else if(client->pro_status == PROTOCOL_ERR)
+            {
+                
+            }
         }
         else
         {
             break;
         }
     }
-
+    
+    client_flush_cmd_replies(client);
 }
 
-static RESPCommand *reader_get_cmd_strut(RESPReader *reader, size_t min_cap)
+static RESPCommand *reader_get_cmd_stru(RESPReader *reader, RESPClient *client, size_t min_cap)
 {
     RESPCommand * stru = NULL;
     if(reader->cmd_strus_count > 0)
@@ -424,9 +554,14 @@ static RESPCommand *reader_get_cmd_strut(RESPReader *reader, size_t min_cap)
     else
     {
         stru = (RESPCommand *)mm_malloc(sizeof(RESPCommand));
+        stru->conn.cmd = stru;
+        stru->conn.client = client;
         stru->args_cap = 0;
-        stru->args = NULL;
+        stru->arg_global_offsets = NULL;
         stru->arg_lens = NULL;
+        stru->reply = NULL;
+        stru->reply_cap = 0;
+        stru->reply_size = 0;
     }
     
     if((stru->args_cap) < min_cap)
@@ -443,11 +578,27 @@ static RESPCommand *reader_get_cmd_strut(RESPReader *reader, size_t min_cap)
             }
         }
         mm_free(stru->arg_lens);
-        mm_free(stru->args);
-        stru->args = mm_malloc(sizeof(char *) * (stru->args_cap));
+        mm_free(stru->arg_global_offsets);
+        stru->arg_global_offsets = mm_malloc(sizeof(size_t) * (stru->args_cap));
         stru->arg_lens = mm_malloc(sizeof(size_t) * (stru->args_cap));
     }
     return stru;
+}
+
+static void reader_return_cmd_stru(RESPReader *reader, RESPCommand *cmd)
+{
+    if(reader->cmd_strus_count < (1024*1024))
+    {
+        g_trash_stack_push (&(reader->cmd_strus),cmd);
+        (reader->cmd_strus_count)++;
+    }
+    else
+    {
+        mm_free(cmd->arg_lens);
+        mm_free(cmd->arg_global_offsets);
+        mm_free(cmd->reply);
+        mm_free(cmd);
+    }
 }
 
 static RESPReaderTask *reader_task_new(RESPReaderTaskType type, void *data, size_t data_len)
@@ -465,6 +616,7 @@ static void reader_task_new_client(void *data, size_t data_len)
     
     client_buff_in_init(client);
     client->pro_status = REQ_STAR;
+    client->req_queue = g_queue_new ();
     
     ev_io_init(&(client->watcher), client_cb_read, client->fd, EV_READ);
     ev_io_start(client->reader->loop, &(client->watcher));
@@ -526,9 +678,10 @@ void accept_cb(struct ev_loop *loop, struct ev_io *watcher, int revents)
     ev_async_send(client->reader->loop, &(client->reader->notifier));
 }
 
-RESPServer *resp_new_server(int port, int readers)
+RESPServer *resp_new_server(int port, RESPCommandProcess *proc, int readers)
 {
     RESPServer *result = (RESPServer *)mm_malloc(sizeof(RESPServer));
+    result->proc = proc;
     result->port = port;
     result->loop = ev_loop_new(EVFLAG_AUTO);
     result->list_fd = -1;
@@ -551,22 +704,58 @@ RESPServer *resp_new_server(int port, int readers)
     return result;
 }
 
-
 void resp_server_start(RESPServer *srv)
 {
     srv->list_fd = net_listen(srv->port, 5);
     
-    for(int i = 0; i<(srv->reader_num); i++)
+    if(srv->list_fd >= 0)
     {
-        ev_async_init(&(srv->readers[i].notifier), reader_cb_task);
-        ev_async_start(srv->readers[i].loop, &(srv->readers[i].notifier));
-        srv->readers[i].notifier.data = &(srv->readers[i]);
-        srv->readers[i].thread = g_thread_new (srv->readers[i].name, reader_loop, &(srv->readers[i]));
+        for(int i = 0; i<(srv->reader_num); i++)
+        {
+            ev_async_init(&(srv->readers[i].notifier), reader_cb_task);
+            ev_async_start(srv->readers[i].loop, &(srv->readers[i].notifier));
+            srv->readers[i].notifier.data = &(srv->readers[i]);
+            srv->readers[i].thread = g_thread_new (srv->readers[i].name, reader_loop, &(srv->readers[i]));
+        }
+        
+        ev_io_init(&(srv->list_watcher), accept_cb, srv->list_fd, EV_READ);
+        ev_io_start(srv->loop, &(srv->list_watcher));
+        
+        srv->read_ptr = 0;
+        do{}while(ev_run (srv->loop, 0));
     }
+    else
+    {
+        log_error("listen on port [%d] failed, fd=[%d]", srv->port, srv->list_fd);
+    }
+}
 
-    ev_io_init(&(srv->list_watcher), accept_cb, srv->list_fd, EV_READ);
-    ev_io_start(srv->loop, &(srv->list_watcher));
-    
-    srv->read_ptr = 0;
-    do{}while(ev_run (srv->loop, 0));
+size_t resp_cmd_get_args_count(RESPCommand *cmd)
+{
+    return cmd->args_count;
+}
+
+char *resp_cmd_get_arg(RESPCommand *cmd, off_t index)
+{
+    char *result = NULL;
+    if(index < cmd->args_count)
+    {
+        result = (cmd->conn.client->buff_in->buff + (cmd->arg_global_offsets[index] - cmd->conn.client->buff_in->global_offset));
+    }
+    return result;
+}
+
+ssize_t resp_cmd_get_arg_len(RESPCommand *cmd, off_t index)
+{
+    ssize_t result = -1;
+    if(index < cmd->args_count)
+    {
+        result = (cmd->arg_lens[(cmd->arg_global_offsets[index] - cmd->conn->client->buff_in->global_offset)]);
+    }
+    return result;
+}
+
+void resp_reply_list(RESPCommand *cmd, char **vals, size_t *v_sizes, size_t val_num)
+{
+    cmd_serialize_list(cmd, vals, v_sizes, val_num);
 }
