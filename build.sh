@@ -6,6 +6,17 @@ dir_name=`pwd`
 #######################
 echo "going to build libs"
 
+echo "going to build hiredis"
+cd ${dir_name}/lib/hiredis/from-redis-3.2.6
+pwd
+make clean
+make static
+mkdir -pv ${dir_name}/lib/hiredis/lib
+mv -v libhiredis.a ${dir_name}/lib/hiredis/lib
+mkdir -pv ${dir_name}/lib/hiredis/include
+cp -v *.h ${dir_name}/lib/hiredis/include
+cp -rv adapter ${dir_name}/lib/hiredis/include
+
 echo "going to build libev"
 cd ${dir_name}/lib/libev/libev-4.24
 ./configure --prefix=${dir_name}/lib/libev
