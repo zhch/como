@@ -40,14 +40,7 @@
 void cmd_proc(RESPConnection *con, RESPCommand *cmd)
 {
     printf("--------zc:cmd of [%lu] args processed\n", resp_cmd_get_args_count(cmd));
-    char **vals= (char **)mm_malloc(sizeof(char *) * resp_cmd_get_args_count(cmd));
-    size_t *val_lens = (size_t *)mm_malloc(sizeof(size_t) * resp_cmd_get_args_count(cmd));
-    for(int i = 0; i<resp_cmd_get_args_count(cmd); i++)
-    {
-        vals[i] = resp_cmd_get_arg(cmd, i);
-        val_lens[i] = resp_cmd_get_arg_len(cmd, i);
-    }
-    resp_reply_list(con, vals, val_lens, resp_cmd_get_args_count(cmd));
+    resp_reply_list(con, resp_cmd_get_args(cmd), resp_cmd_get_arg_lens(cmd), resp_cmd_get_args_count(cmd));
 }
 
 int main(int argc, char **argv)

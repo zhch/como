@@ -66,8 +66,7 @@ typedef struct resp_client_buff RESPClientBuffer;
 struct resp_client_buff
 {
     char *buff;
-    size_t global_offset;
-    size_t free_global;
+    size_t free;
     size_t cap;
     off_t head;
     off_t tail;
@@ -82,7 +81,6 @@ struct resp_client
     ev_io watcher;
     
     RESPClientBuffer *buff_in;
-    RESPClientBuffer *buff_in_back;
 
     RESPProtocolStatus pro_status;
     RESPCommand *pro_cmd;
@@ -100,7 +98,7 @@ struct resp_cmd
 {
     size_t args_cap;
     size_t args_count;
-    size_t *arg_global_offsets;
+    char **args;
     size_t *arg_lens;
     off_t arg_ptr;
     
@@ -265,47 +263,20 @@ static RESPClient *client_new(RESPReader *reader, int fd, struct sockaddr_in *ad
 static inline char *client_buff_in_init(RESPClient *client)
 {
     client->buff_in = (RESPClientBuffer *)mm_malloc(sizeof(RESPClientBuffer));
-    client->buff_in->global_offset = 0;
     client->buff_in->cap = 1024;
     client->buff_in->head = 0;
     client->buff_in->tail = 0;
-    client->buff_in->free_global = 0;
+    client->buff_in->free = 0;
     client->buff_in->buff = (char *)mm_malloc(client->buff_in->cap);
-    
-    client->buff_in_back = NULL;
 }
 
 static inline bool client_buff_in_compact(RESPClient *client)
 {
-    if(client->buff_in_back == NULL)
-    {
-        client->buff_in_back = (RESPClientBuffer *)mm_malloc(sizeof(RESPClientBuffer));
-        client->buff_in_back->cap = client->buff_in->cap;
-        client->buff_in_back->buff = (char *)mm_malloc(client->buff_in_back->cap);
-    }
-    
-    if((client->buff_in_back->cap) < (client->buff_in->tail - client->buff_in->free_global + client->buff_in->global_offset))
-    {
-        while((client->buff_in_back->cap) < (client->buff_in->tail - client->buff_in->free_global + client->buff_in->global_offset))
-        {
-            (client->buff_in_back->cap) *= 2;
-        }
-        mm_free(client->buff_in_back->buff);
-        client->buff_in_back->buff = (char *)mm_malloc(client->buff_in_back->cap);
-    }
-    
-    off_t copy_offset = (client->buff_in->free_global) - (client->buff_in->global_offset);
-    memcpy(client->buff_in_back->buff, (client->buff_in->buff) + copy_offset, (client->buff_in->tail) - copy_offset);
-
-    client->buff_in_back->global_offset = client->buff_in->free_global;
-    client->buff_in_back->free_global = client->buff_in->free_global;
-    client->buff_in_back->head = 0;
-    client->buff_in_back->tail = ((client->buff_in->tail) - copy_offset);
-    client->buff_in_back->parse = client->buff_in->parse - copy_offset;
-    
-    RESPClientBuffer *tmp = client->buff_in;
-    client->buff_in = client->buff_in_back;
-    client->buff_in_back = tmp;
+    memmove(client->buff_in->buff, (client->buff_in->buff) + (client->buff_in->free), (client->buff_in->tail) - (client->buff_in->free));
+    (client->buff_in->tail) = (client->buff_in->tail) - (client->buff_in->free);
+    (client->buff_in->head) = (client->buff_in->head) - (client->buff_in->free);
+    (client->buff_in->parse) = (client->buff_in->parse) - (client->buff_in->free);
+    client->buff_in->free = 0;
 }
 
 static inline bool client_buff_in_expand(RESPClient *client, size_t min_cap)
@@ -316,6 +287,7 @@ static inline bool client_buff_in_expand(RESPClient *client, size_t min_cap)
         {
             (client->buff_in->cap) *= 2;
         }
+        (client->buff_in->buff) = mm_realloc(client->buff_in->buff, client->buff_in->cap);
         return true;
     }
     return false;
@@ -341,16 +313,15 @@ static inline off_t client_buff_in_tail_incr(RESPClient *client, off_t incr)
     (client->buff_in->tail) += incr;
 }
 
-static void client_buff_in_set_free_global(RESPClient *client, size_t free_global)
+static void client_buff_in_set_free(RESPClient *client, size_t free)
 {
-    client->buff_in->free_global = free_global;
+    client->buff_in->free = free;
 }
 
 static RESPCommand *client_buff_in_process(RESPClient *client)
 {
     char *buff = client->buff_in->buff;
     off_t tail = client->buff_in->tail;
-    size_t global_offset0 = client->buff_in->global_offset;
 
     off_t head = client->buff_in->head;
     off_t parse = client->buff_in->parse;
@@ -424,7 +395,7 @@ static RESPCommand *client_buff_in_process(RESPClient *client)
             {
                 status = ARG;
                 head++;
-                cmd->arg_global_offsets[cmd->arg_ptr] = global_offset0 + head;
+                cmd->args[cmd->arg_ptr] = buff+head;
             }
             else
             {
@@ -435,7 +406,7 @@ static RESPCommand *client_buff_in_process(RESPClient *client)
         {
             if(buff[head] == '\r')
             {
-                if(((head+global_offset0) - cmd->arg_global_offsets[cmd->arg_ptr]) == cmd->arg_lens[cmd->arg_ptr])
+                if((head - (cmd->args[cmd->arg_ptr] - buff)) == cmd->arg_lens[cmd->arg_ptr])
                 {
                     (cmd->arg_ptr)++;
                     status = ARG_LF;
@@ -491,8 +462,7 @@ static void client_flush_cmd_replies(RESPClient *client)
             log_error("try to write [%lu] bytes of reply failed, return=[%ld], msg=[%s]",cmd->reply_size,write_result,strerror(errno));
         }
         
-        client_buff_in_set_free_global(client, cmd->arg_global_offsets[cmd->args_count - 1] + cmd->arg_lens[cmd->args_count - 1] + 2);
-        
+        client_buff_in_set_free(client, (cmd->args[cmd->args_count - 1] - (cmd->conn.client->buff_in->buff)) + cmd->arg_lens[cmd->args_count-1] + 2);
         reader_return_cmd_stru(client->reader, cmd);
         cmd = (RESPCommand *)g_queue_peek_head (client->req_queue);
     }
@@ -557,7 +527,7 @@ static RESPCommand *reader_get_cmd_stru(RESPReader *reader, RESPClient *client, 
         stru->conn.cmd = stru;
         stru->conn.client = client;
         stru->args_cap = 0;
-        stru->arg_global_offsets = NULL;
+        stru->args = NULL;
         stru->arg_lens = NULL;
         stru->reply = NULL;
         stru->reply_cap = 0;
@@ -578,8 +548,8 @@ static RESPCommand *reader_get_cmd_stru(RESPReader *reader, RESPClient *client, 
             }
         }
         mm_free(stru->arg_lens);
-        mm_free(stru->arg_global_offsets);
-        stru->arg_global_offsets = mm_malloc(sizeof(size_t) * (stru->args_cap));
+        mm_free(stru->args);
+        stru->args = mm_malloc(stru->args_cap);
         stru->arg_lens = mm_malloc(sizeof(size_t) * (stru->args_cap));
     }
     return stru;
@@ -595,7 +565,7 @@ static void reader_return_cmd_stru(RESPReader *reader, RESPCommand *cmd)
     else
     {
         mm_free(cmd->arg_lens);
-        mm_free(cmd->arg_global_offsets);
+        mm_free(cmd->args);
         mm_free(cmd->reply);
         mm_free(cmd);
     }
@@ -735,27 +705,17 @@ size_t resp_cmd_get_args_count(RESPCommand *cmd)
     return cmd->args_count;
 }
 
-char *resp_cmd_get_arg(RESPCommand *cmd, off_t index)
+char **resp_cmd_get_args(RESPCommand *cmd)
 {
-    char *result = NULL;
-    if(index < cmd->args_count)
-    {
-        result = (cmd->conn.client->buff_in->buff + (cmd->arg_global_offsets[index] - cmd->conn.client->buff_in->global_offset));
-    }
-    return result;
+    return cmd->args;
 }
 
-ssize_t resp_cmd_get_arg_len(RESPCommand *cmd, off_t index)
+ssize_t *resp_cmd_get_arg_lens(RESPCommand *cmd)
 {
-    ssize_t result = -1;
-    if(index < cmd->args_count)
-    {
-        result = (cmd->arg_lens[(cmd->arg_global_offsets[index] - cmd->conn->client->buff_in->global_offset)]);
-    }
-    return result;
+    return cmd->arg_lens;
 }
 
-void resp_reply_list(RESPCommand *cmd, char **vals, size_t *v_sizes, size_t val_num)
+void resp_reply_list(RESPConnection *con, char **vals, size_t *v_sizes, size_t val_num)
 {
-    cmd_serialize_list(cmd, vals, v_sizes, val_num);
+    cmd_serialize_list(con->cmd, vals, v_sizes, val_num);
 }
