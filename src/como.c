@@ -39,7 +39,6 @@
 
 void cmd_proc(RESPConnection *con, RESPCommand *cmd)
 {
-    printf("--------zc:cmd of [%lu] args processed\n", resp_cmd_get_args_count(cmd));
     resp_reply_list(con, resp_cmd_get_args(cmd), resp_cmd_get_arg_lens(cmd), resp_cmd_get_args_count(cmd));
 }
 
