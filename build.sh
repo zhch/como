@@ -15,7 +15,7 @@ mkdir -pv ${dir_name}/lib/hiredis/lib
 mv -v libhiredis.a ${dir_name}/lib/hiredis/lib
 mkdir -pv ${dir_name}/lib/hiredis/include
 cp -v *.h ${dir_name}/lib/hiredis/include
-cp -rv adapter ${dir_name}/lib/hiredis/include
+cp -rv adapters  ${dir_name}/lib/hiredis/include
 
 echo "going to build libev"
 cd ${dir_name}/lib/libev/libev-4.24
