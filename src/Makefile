@@ -1,9 +1,7 @@
 uname_S := $(shell sh -c 'uname -s 2>/dev/null || echo not')
 
 CC=gcc
-CFLAG=-O0 -std=c99 -pedantic -ggdb
-
-WARN=-Wall -W
+CFLAG=-O0 -std=c99 -pedantic -ggdb -Wall
 
 PREFIX=../lib
 

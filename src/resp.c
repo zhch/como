@@ -232,7 +232,7 @@ static void cmd_serialize_list(RESPCommand *cmd, char **vals, size_t *v_sizes, s
     }
 
     int ptr = 0;
-    ptr += g_sprintf ((cmd->reply)+ptr, "*%d\r\n", val_num);
+    ptr += g_sprintf ((cmd->reply)+ptr, "*%lu\r\n", val_num);
     for(int i = 0; i<val_num; i++)
     {
         if(vals[i] == NULL)
@@ -241,7 +241,7 @@ static void cmd_serialize_list(RESPCommand *cmd, char **vals, size_t *v_sizes, s
         }
         else
         {
-            ptr += g_sprintf ((cmd->reply)+ptr, "$%d\r\n", v_sizes[i]);
+            ptr += g_sprintf ((cmd->reply)+ptr, "$%lu\r\n", v_sizes[i]);
             memcpy((cmd->reply)+ptr, vals[i], v_sizes[i]);
             ptr += v_sizes[i];
             (cmd->reply)[ptr++] = '\r';
@@ -260,7 +260,7 @@ static RESPClient *client_new(RESPReader *reader, int fd, struct sockaddr_in *ad
     return result;
 }
 
-static inline char *client_buff_in_init(RESPClient *client)
+static inline void client_buff_in_init(RESPClient *client)
 {
     client->buff_in = (RESPClientBuffer *)mm_malloc(sizeof(RESPClientBuffer));
     client->buff_in->cap = 1024;
@@ -272,11 +272,19 @@ static inline char *client_buff_in_init(RESPClient *client)
 
 static inline bool client_buff_in_compact(RESPClient *client)
 {
-    memmove(client->buff_in->buff, (client->buff_in->buff) + (client->buff_in->free), (client->buff_in->tail) - (client->buff_in->free));
-    (client->buff_in->tail) = (client->buff_in->tail) - (client->buff_in->free);
-    (client->buff_in->head) = (client->buff_in->head) - (client->buff_in->free);
-    (client->buff_in->parse) = (client->buff_in->parse) - (client->buff_in->free);
-    client->buff_in->free = 0;
+    if(client->buff_in->free > 0)
+    {
+        memmove(client->buff_in->buff, (client->buff_in->buff) + (client->buff_in->free), (client->buff_in->tail) - (client->buff_in->free));
+        (client->buff_in->tail) = (client->buff_in->tail) - (client->buff_in->free);
+        (client->buff_in->head) = (client->buff_in->head) - (client->buff_in->free);
+        (client->buff_in->parse) = (client->buff_in->parse) - (client->buff_in->free);
+        client->buff_in->free = 0;
+        return true;
+    }
+    else
+    {
+        return false;
+    }
 }
 
 static inline bool client_buff_in_expand(RESPClient *client, size_t min_cap)
@@ -308,7 +316,7 @@ static inline size_t client_buff_in_len(RESPClient *client)
     return (client->buff_in->tail) - (client->buff_in->head);
 }
 
-static inline off_t client_buff_in_tail_incr(RESPClient *client, off_t incr)
+static inline void client_buff_in_tail_incr(RESPClient *client, off_t incr)
 {
     (client->buff_in->tail) += incr;
 }
@@ -318,7 +326,7 @@ static void client_buff_in_set_free(RESPClient *client, size_t free)
     client->buff_in->free = free;
 }
 
-static RESPCommand *client_buff_in_process(RESPClient *client)
+static void client_buff_in_process(RESPClient *client)
 {
     char *buff = client->buff_in->buff;
     off_t tail = client->buff_in->tail;
@@ -710,7 +718,7 @@ char **resp_cmd_get_args(RESPCommand *cmd)
     return cmd->args;
 }
 
-ssize_t *resp_cmd_get_arg_lens(RESPCommand *cmd)
+size_t *resp_cmd_get_arg_lens(RESPCommand *cmd)
 {
     return cmd->arg_lens;
 }

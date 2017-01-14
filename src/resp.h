@@ -47,6 +47,6 @@ void resp_reply_list(RESPConnection *con, char **vals, size_t *v_sizes, size_t v
 
 size_t resp_cmd_get_args_count(RESPCommand *cmd);
 char **resp_cmd_get_args(RESPCommand *cmd);
-ssize_t *resp_cmd_get_arg_lens(RESPCommand *cmd);
+size_t *resp_cmd_get_arg_lens(RESPCommand *cmd);
 
 #endif /* resp_h */
