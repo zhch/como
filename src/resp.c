@@ -68,9 +68,9 @@ struct resp_client_buff
     char *buff;
     size_t free;
     size_t cap;
-    off_t head;
-    off_t tail;
-    off_t parse;
+    size_t head;
+    size_t tail;
+    size_t parse;
 };
 
 struct resp_client
@@ -100,7 +100,7 @@ struct resp_cmd
     size_t args_count;
     char **args;
     size_t *arg_lens;
-    off_t arg_ptr;
+    size_t arg_ptr;
     
     char *reply;
     size_t reply_cap;
@@ -153,8 +153,33 @@ static void reader_return_cmd_stru(RESPReader *reader, RESPCommand *cmd);
 
 
 
+static int io_set_fd_blocking(int fd, int blocking)
+{
+    int flags = fcntl(fd, F_GETFL);
+    if (flags == -1)
+    {
+        log_error("fcntl(F_GETFL) failed");
+        return -1;
+    }
+    
+    if (blocking)
+    {
+        flags &= ~O_NONBLOCK;
+    }
+    else
+    {
+        flags |= O_NONBLOCK;
+    }
+    
+    if (fcntl(fd, F_SETFL, flags) == -1)
+    {
+        log_error("fcntl(F_SETFL) failed");
+        return -2;
+    }
+    return 0;
+}
 
-bool net_set_socket_addr_reuse(int socket_fd)
+static bool net_set_socket_addr_reuse(int socket_fd)
 {
     int yes = 1;
     if (setsockopt(socket_fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) == -1)
@@ -199,7 +224,7 @@ static int net_listen(int port, int backlog)
     return fd;
 }
 
-int net_accept(int listen_fd, struct sockaddr_in *client_add)
+static int net_accept(int listen_fd, struct sockaddr_in *client_add)
 {
     int add_len = sizeof(struct sockaddr_in);
     return accept(listen_fd, (struct sockaddr *)client_add, (socklen_t*)(&add_len));
@@ -228,7 +253,7 @@ static void cmd_serialize_list(RESPCommand *cmd, char **vals, size_t *v_sizes, s
             }
         }
         mm_free(cmd->reply);
-        mm_malloc(cmd->reply_cap);
+        cmd->reply = mm_malloc(cmd->reply_cap);
     }
 
     int ptr = 0;
@@ -258,6 +283,11 @@ static RESPClient *client_new(RESPReader *reader, int fd, struct sockaddr_in *ad
     result->fd = fd;
     result->add = add;
     return result;
+}
+
+static void client_close(RESPClient *client)
+{
+    
 }
 
 static inline void client_buff_in_init(RESPClient *client)
@@ -329,10 +359,10 @@ static void client_buff_in_set_free(RESPClient *client, size_t free)
 static void client_buff_in_process(RESPClient *client)
 {
     char *buff = client->buff_in->buff;
-    off_t tail = client->buff_in->tail;
+    size_t tail = client->buff_in->tail;
 
-    off_t head = client->buff_in->head;
-    off_t parse = client->buff_in->parse;
+    size_t head = client->buff_in->head;
+    size_t parse = client->buff_in->parse;
     RESPProtocolStatus status = client->pro_status;
     RESPCommand *cmd = client->pro_cmd;
     
@@ -416,7 +446,6 @@ static void client_buff_in_process(RESPClient *client)
             {
                 if((head - (cmd->args[cmd->arg_ptr] - buff)) == cmd->arg_lens[cmd->arg_ptr])
                 {
-                    (cmd->arg_ptr)++;
                     status = ARG_LF;
                     head++;
                 }
@@ -492,13 +521,27 @@ static void client_cb_read(struct ev_loop *loop, struct ev_io *watcher, int reve
         }
         
         ssize_t read_count = read(client->fd, client_buff_in_tail(client), client_buff_in_space(client));
-        client_buff_in_tail_incr(client, read_count);
+        if(read_count > 0)
+        {
+            client_buff_in_tail_incr(client, read_count);
+        }
+        else if(read_count == 0)
+        {
+            client_close(client);   //EOF
+        }
+        else
+        {
+            if(errno != 11) //errno==11 means there is no more data temprarily
+            {
+                log_warn("read client failed [%s], disconnect",strerror(errno));
+                client_close(client);
+            }
+        }
         
         if(client_buff_in_len(client) > 0)
         {
             client_buff_in_process(client);
-            printf("---------zc: pro_status = [%d] \n",client->pro_status);
-            
+            client->buff_in->buff[client->buff_in->cap - 1] = '\0';
             if(client->pro_status == REQ_READY)
             {
                 client->pro_cmd->reply_size = 0;
@@ -509,7 +552,9 @@ static void client_cb_read(struct ev_loop *loop, struct ev_io *watcher, int reve
             }
             else if(client->pro_status == PROTOCOL_ERR)
             {
-                
+                log_warn("invalid protocol from client, disconnect");
+                client_close(client);
+                break;
             }
         }
         else
@@ -579,6 +624,8 @@ static void reader_return_cmd_stru(RESPReader *reader, RESPCommand *cmd)
     }
 }
 
+
+
 static RESPReaderTask *reader_task_new(RESPReaderTaskType type, void *data, size_t data_len)
 {
     RESPReaderTask *result = (RESPReaderTask *)mm_malloc(sizeof(RESPReaderTask));
@@ -596,6 +643,7 @@ static void reader_task_new_client(void *data, size_t data_len)
     client->pro_status = REQ_STAR;
     client->req_queue = g_queue_new ();
     
+    io_set_fd_blocking(client->fd, 0);
     ev_io_init(&(client->watcher), client_cb_read, client->fd, EV_READ);
     ev_io_start(client->reader->loop, &(client->watcher));
     client->watcher.data = client;
@@ -603,7 +651,7 @@ static void reader_task_new_client(void *data, size_t data_len)
     g_hash_table_add (client->reader->clients,client);
 }
 
-void reader_cb_task(struct ev_loop *loop, ev_async * watcher, int revents)
+static void reader_cb_task(struct ev_loop *loop, ev_async * watcher, int revents)
 {
     RESPReader *reader = (RESPReader *)watcher->data;
     RESPReaderTask *task = (RESPReaderTask *)g_queue_pop_head (reader->task_queue);
@@ -618,14 +666,14 @@ void reader_cb_task(struct ev_loop *loop, ev_async * watcher, int revents)
     }
 }
 
-gpointer reader_loop (gpointer data)
+static gpointer reader_loop (gpointer data)
 {
     RESPReader *reader = (RESPReader *)data;
     do{}while(ev_run(reader->loop, 0));
     return NULL;
 }
 
-void accept_cb(struct ev_loop *loop, struct ev_io *watcher, int revents)
+static void accept_cb(struct ev_loop *loop, struct ev_io *watcher, int revents)
 {
     RESPServer *srv = (RESPServer *)(watcher->data);
 
@@ -726,4 +774,9 @@ size_t *resp_cmd_get_arg_lens(RESPCommand *cmd)
 void resp_reply_list(RESPConnection *con, char **vals, size_t *v_sizes, size_t val_num)
 {
     cmd_serialize_list(con->cmd, vals, v_sizes, val_num);
+}
+
+void resp_reply_error(RESPConnection *con, char **err_msg)
+{
+    
 }
