@@ -47,6 +47,11 @@
 #include <stdbool.h>
 #include <errno.h>
 
+/*
+    TODOs:
+        [1]make reader task queue as lockless circular buffer
+ */
+
 typedef struct resp_client RESPClient;
 
 typedef enum resp_protocol_status
@@ -65,6 +70,7 @@ typedef struct resp_client_buff RESPClientBuffer;
 
 struct resp_client_buff
 {
+    size_t global_offset;
     char *buff;
     size_t free;
     size_t cap;
@@ -98,7 +104,7 @@ struct resp_cmd
 {
     size_t args_cap;
     size_t args_count;
-    char **args;
+    size_t *args;   //global offsets
     size_t *arg_lens;
     size_t arg_ptr;
     
@@ -132,6 +138,7 @@ struct resp_reader
     
     ev_async notifier;
     GQueue *task_queue;
+    GMutex task_queue_sync;
 };  
 
 struct resp_server
@@ -175,6 +182,17 @@ static int io_set_fd_blocking(int fd, int blocking)
     {
         log_error("fcntl(F_SETFL) failed");
         return -2;
+    }
+    return 0;
+}
+
+int net_set_socket_tcp_no_delay(int socket_fd)
+{
+    int yes = 1;
+    if (setsockopt(socket_fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes)) == -1)
+    {
+        log_error("setsockopt(TCP_NODELAY) failed");
+        return -1;
     }
     return 0;
 }
@@ -298,6 +316,7 @@ static inline void client_buff_in_init(RESPClient *client)
     client->buff_in->tail = 0;
     client->buff_in->free = 0;
     client->buff_in->buff = (char *)mm_malloc(client->buff_in->cap);
+    client->buff_in->global_offset = 0;
 }
 
 static inline bool client_buff_in_compact(RESPClient *client)
@@ -305,6 +324,7 @@ static inline bool client_buff_in_compact(RESPClient *client)
     if(client->buff_in->free > 0)
     {
         memmove(client->buff_in->buff, (client->buff_in->buff) + (client->buff_in->free), (client->buff_in->tail) - (client->buff_in->free));
+        (client->buff_in->global_offset) += (client->buff_in->free);
         (client->buff_in->tail) = (client->buff_in->tail) - (client->buff_in->free);
         (client->buff_in->head) = (client->buff_in->head) - (client->buff_in->free);
         (client->buff_in->parse) = (client->buff_in->parse) - (client->buff_in->free);
@@ -351,15 +371,16 @@ static inline void client_buff_in_tail_incr(RESPClient *client, off_t incr)
     (client->buff_in->tail) += incr;
 }
 
-static void client_buff_in_set_free(RESPClient *client, size_t free)
+static void client_buff_in_set_free(RESPClient *client, size_t free_global)
 {
-    client->buff_in->free = free;
+    client->buff_in->free = (free_global - client->buff_in->global_offset);
 }
 
 static void client_buff_in_process(RESPClient *client)
 {
     char *buff = client->buff_in->buff;
     size_t tail = client->buff_in->tail;
+    size_t global_off0 = client->buff_in->global_offset;
 
     size_t head = client->buff_in->head;
     size_t parse = client->buff_in->parse;
@@ -433,7 +454,7 @@ static void client_buff_in_process(RESPClient *client)
             {
                 status = ARG;
                 head++;
-                cmd->args[cmd->arg_ptr] = buff+head;
+                cmd->args[cmd->arg_ptr] = head+global_off0;
             }
             else
             {
@@ -444,13 +465,13 @@ static void client_buff_in_process(RESPClient *client)
         {
             if(buff[head] == '\r')
             {
-                if((head - (cmd->args[cmd->arg_ptr] - buff)) == cmd->arg_lens[cmd->arg_ptr])
+                if((head - (cmd->args[cmd->arg_ptr] - global_off0)) == cmd->arg_lens[cmd->arg_ptr])
                 {
                     status = ARG_LF;
                     head++;
                 }
                 else
-                {
+                {                    
                     status = PROTOCOL_ERR;
                 }
             }
@@ -499,7 +520,7 @@ static void client_flush_cmd_replies(RESPClient *client)
             log_error("try to write [%lu] bytes of reply failed, return=[%ld], msg=[%s]",cmd->reply_size,write_result,strerror(errno));
         }
         
-        client_buff_in_set_free(client, (cmd->args[cmd->args_count - 1] - (cmd->conn.client->buff_in->buff)) + cmd->arg_lens[cmd->args_count-1] + 2);
+        client_buff_in_set_free(client, cmd->args[cmd->args_count - 1] + cmd->arg_lens[cmd->args_count-1] + 2);
         reader_return_cmd_stru(client->reader, cmd);
         cmd = (RESPCommand *)g_queue_peek_head (client->req_queue);
     }
@@ -541,7 +562,6 @@ static void client_cb_read(struct ev_loop *loop, struct ev_io *watcher, int reve
         if(client_buff_in_len(client) > 0)
         {
             client_buff_in_process(client);
-            client->buff_in->buff[client->buff_in->cap - 1] = '\0';
             if(client->pro_status == REQ_READY)
             {
                 client->pro_cmd->reply_size = 0;
@@ -643,6 +663,7 @@ static void reader_task_new_client(void *data, size_t data_len)
     client->pro_status = REQ_STAR;
     client->req_queue = g_queue_new ();
     
+    net_set_socket_tcp_no_delay(client->fd);
     io_set_fd_blocking(client->fd, 0);
     ev_io_init(&(client->watcher), client_cb_read, client->fd, EV_READ);
     ev_io_start(client->reader->loop, &(client->watcher));
@@ -654,6 +675,7 @@ static void reader_task_new_client(void *data, size_t data_len)
 static void reader_cb_task(struct ev_loop *loop, ev_async * watcher, int revents)
 {
     RESPReader *reader = (RESPReader *)watcher->data;
+    g_mutex_lock(&(reader->task_queue_sync));
     RESPReaderTask *task = (RESPReaderTask *)g_queue_pop_head (reader->task_queue);
     while(task != NULL)
     {
@@ -664,6 +686,7 @@ static void reader_cb_task(struct ev_loop *loop, ev_async * watcher, int revents
         mm_free(task);
         task = (RESPReaderTask *)g_queue_pop_head (reader->task_queue);
     }
+    g_mutex_unlock(&(reader->task_queue_sync));
 }
 
 static gpointer reader_loop (gpointer data)
@@ -697,10 +720,14 @@ static void accept_cb(struct ev_loop *loop, struct ev_io *watcher, int revents)
 
     log_debug("client [%s:%d] connected",inet_ntoa(client_add->sin_addr),client_add->sin_port);
 
-    RESPClient *client = client_new(&(srv->readers[(srv->read_ptr)++]), client_fd, client_add);
+    RESPClient *client = client_new(&(srv->readers[srv->read_ptr]), client_fd, client_add);
+    (srv->read_ptr) = ((srv->read_ptr) + 1) % (srv->reader_num);
+  
     RESPReaderTask *task = reader_task_new(NEW_CLIENT, client, 0);
+    g_mutex_lock(&(client->reader->task_queue_sync));
     g_queue_push_tail (client->reader->task_queue, task);
-
+    g_mutex_unlock(&(client->reader->task_queue_sync));
+    
     ev_async_send(client->reader->loop, &(client->reader->notifier));
 }
 
@@ -725,6 +752,7 @@ RESPServer *resp_new_server(int port, RESPCommandProcess *proc, int readers)
         result->readers[i].cmd_strus = NULL;
         result->readers[i].cmd_strus_count = 0;
         result->readers[i].cmd = NULL;
+        g_mutex_init(&(result->readers[i].task_queue_sync));
     }
 
     return result;
@@ -761,9 +789,9 @@ size_t resp_cmd_get_args_count(RESPCommand *cmd)
     return cmd->args_count;
 }
 
-char **resp_cmd_get_args(RESPCommand *cmd)
+char *resp_cmd_get_arg(RESPCommand *cmd, off_t index)
 {
-    return cmd->args;
+    return cmd->conn.client->buff_in->buff + (cmd->args[index] - cmd->conn.client->buff_in->global_offset);
 }
 
 size_t *resp_cmd_get_arg_lens(RESPCommand *cmd)

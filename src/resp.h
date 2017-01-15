@@ -46,7 +46,7 @@ void resp_server_start(RESPServer *srv);
 void resp_reply_list(RESPConnection *con, char **vals, size_t *v_sizes, size_t val_num);
 
 size_t resp_cmd_get_args_count(RESPCommand *cmd);
-char **resp_cmd_get_args(RESPCommand *cmd);
+char *resp_cmd_get_arg(RESPCommand *cmd, off_t index);
 size_t *resp_cmd_get_arg_lens(RESPCommand *cmd);
 
 #endif /* resp_h */
