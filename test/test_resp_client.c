@@ -40,10 +40,10 @@ static char *server_ip = "127.0.0.1";
 static int server_port = 1234;
 static int thread_count = 1;
 static GPtrArray *thread_arr;
-static long op_per_thread = 100;
+static long op_per_thread = 10000;
 
 static GRand *random;
-static gint32 max_arg_count = 16;
+static gint32 max_arg_count = 4;
 static gint32 max_arg_len = 4;
 
 char **rand_args(int arg_count, size_t **arg_lens)
@@ -107,7 +107,7 @@ gpointer thread_loop(gpointer data)
                 }
                 else
                 {
-                    printf("[%d] args req PASS\n",arg_count);
+                    printf("[%ld][%d] args req PASS\n",i, arg_count);
                 }
                 
             }

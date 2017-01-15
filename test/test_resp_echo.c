@@ -29,6 +29,7 @@
  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include "mm.h"
 #include "resp.h"
 #include <stdio.h>
 
@@ -37,12 +38,13 @@ static int reader_count = 1;
 
 void echo(RESPConnection *con, RESPCommand *cmd)
 {
-    printf("-------zc: echo: [%lu] \n",resp_cmd_get_args_count(cmd));
-    for(size_t i = 0; i<resp_cmd_get_args_count(cmd); i++)
+    char **args = (char **)mm_malloc(sizeof(char *) * resp_cmd_get_args_count(cmd));
+    for(int i = 0; i<resp_cmd_get_args_count(cmd); i++)
     {
-        printf("--------zc: echo arg len [%lu] = [%lu]\n",i,resp_cmd_get_arg_lens(cmd)[i]);
+        args[i] = resp_cmd_get_arg(cmd, i);
     }
-    resp_reply_list(con, resp_cmd_get_args(cmd), resp_cmd_get_arg_lens(cmd), resp_cmd_get_args_count(cmd));
+    resp_reply_list(con, args, resp_cmd_get_arg_lens(cmd), resp_cmd_get_args_count(cmd));
+    mm_free(args);
 }
 
 int main(int argc, char **argv)
