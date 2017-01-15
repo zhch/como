@@ -248,7 +248,43 @@ static int net_accept(int listen_fd, struct sockaddr_in *client_add)
     return accept(listen_fd, (struct sockaddr *)client_add, (socklen_t*)(&add_len));
 }
 
-static void cmd_serialize_list(RESPCommand *cmd, char **vals, size_t *v_sizes, size_t val_num)
+static inline void cmd_serialize_error_vformat(RESPCommand *cmd, size_t max_len, const char *fmt, va_list args)
+{
+    max_len += 10;
+    if((cmd->reply_cap) < max_len)
+    {
+        while((cmd->reply_cap) < max_len)
+        {
+            if(cmd->reply_cap == 0)
+            {
+                cmd->reply_cap = 64;
+            }
+            else
+            {
+                (cmd->reply_cap) *= 2;
+            }
+        }
+        mm_free(cmd->reply);
+        cmd->reply = mm_malloc(cmd->reply_cap);
+    }
+    
+    memcpy(cmd->reply, "-ERR ", 5);
+    gint len = g_vsnprintf (cmd->reply + 5, cmd->reply_cap - 5 -2, fmt, args);
+    len = len +5;
+    for(int i = 5; i<len; i++)
+    {
+        if(cmd->reply[i] == '\r' || cmd->reply[i] == '\n')
+        {
+            cmd->reply[i] = ' ';
+        }
+    }
+    cmd->reply[len] = '\r';
+    cmd->reply[len+1] = '\n';
+
+    cmd->reply_size = len +2;
+}
+
+static inline void cmd_serialize_list(RESPCommand *cmd, char **vals, size_t *v_sizes, size_t val_num)
 {
     int total_len = 0;
     for(int i = 0; i<val_num; i++)
@@ -463,22 +499,18 @@ static void client_buff_in_process(RESPClient *client)
         }
         else if(status == ARG)
         {
-            if(buff[head] == '\r')
+            if((head - (cmd->args[cmd->arg_ptr] - global_off0)) == cmd->arg_lens[cmd->arg_ptr])
             {
-                if((head - (cmd->args[cmd->arg_ptr] - global_off0)) == cmd->arg_lens[cmd->arg_ptr])
+                if(buff[head] == '\r')
                 {
                     status = ARG_LF;
-                    head++;
                 }
                 else
-                {                    
+                {
                     status = PROTOCOL_ERR;
                 }
             }
-            else
-            {
-                head++;
-            }
+            head++;
         }
         else if(status == ARG_LF)
         {
@@ -572,6 +604,7 @@ static void client_cb_read(struct ev_loop *loop, struct ev_io *watcher, int reve
             }
             else if(client->pro_status == PROTOCOL_ERR)
             {
+                printf("----------zc:invalid protocol from client, disconnect\n");
                 log_warn("invalid protocol from client, disconnect");
                 client_close(client);
                 break;
@@ -598,7 +631,6 @@ static RESPCommand *reader_get_cmd_stru(RESPReader *reader, RESPClient *client, 
     {
         stru = (RESPCommand *)mm_malloc(sizeof(RESPCommand));
         stru->conn.cmd = stru;
-        stru->conn.client = client;
         stru->args_cap = 0;
         stru->args = NULL;
         stru->arg_lens = NULL;
@@ -607,6 +639,8 @@ static RESPCommand *reader_get_cmd_stru(RESPReader *reader, RESPClient *client, 
         stru->reply_size = 0;
     }
     
+    stru->conn.client = client;
+
     if((stru->args_cap) < min_cap)
     {
         while((stru->args_cap) < min_cap)
@@ -804,7 +838,10 @@ void resp_reply_list(RESPConnection *con, char **vals, size_t *v_sizes, size_t v
     cmd_serialize_list(con->cmd, vals, v_sizes, val_num);
 }
 
-void resp_reply_error(RESPConnection *con, char **err_msg)
+void resp_reply_error(RESPConnection *con, size_t max_len, const char *fmt, ...)
 {
-    
+    va_list ap;
+    va_start(ap,fmt);
+    cmd_serialize_error_vformat(con->cmd, max_len, fmt, ap);
+    va_end(ap);
 }

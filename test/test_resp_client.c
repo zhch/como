@@ -38,13 +38,43 @@
 
 static char *server_ip = "127.0.0.1";
 static int server_port = 1234;
-static int thread_count = 1;
-static GPtrArray *thread_arr;
+static int thread_count = 2;
 static long op_per_thread = 10000;
-
-static GRand *random;
 static gint32 max_arg_count = 4;
 static gint32 max_arg_len = 4;
+
+static GPtrArray *thread_arr;
+static GRand *random;
+
+static void init_and_desc_test(char *cfg_path)
+{
+    if(cfg_path != NULL)
+    {
+        GKeyFile *cfg_file = g_key_file_new();
+        gboolean ret = g_key_file_load_from_file (cfg_file, cfg_path, G_KEY_FILE_NONE, NULL);
+        if(ret == false)
+        {
+            printf("try to load cfgs from [%s] failed",cfg_path);
+            exit(0);
+        }
+        
+        server_ip = g_key_file_get_string (cfg_file, "test_resp_client", "server_ip",NULL);
+        server_port = g_key_file_get_integer(cfg_file, "test_resp_client", "server_port",NULL);
+        thread_count = g_key_file_get_integer(cfg_file, "test_resp_client", "thread_count",NULL);
+        op_per_thread = g_key_file_get_integer(cfg_file, "test_resp_client", "op_per_thread",NULL);
+        max_arg_count = g_key_file_get_integer(cfg_file, "test_resp_client", "max_arg_count",NULL);
+        max_arg_len = g_key_file_get_integer(cfg_file, "test_resp_client", "max_arg_len",NULL);
+        g_key_file_free(cfg_file);
+    }
+
+    printf("******* test_resp_client STARTED ********\n");
+    printf("    server: %s:%d\n",server_ip,server_port);
+    printf("   threads: %d\n",thread_count);
+    printf(" op/thread: %ld\n",op_per_thread);
+    printf(" arg count: 1 ~ %d\n",max_arg_count-1);
+    printf("   arg len: 1 ~ %d\n",max_arg_len-1);
+    printf("******* ************************ ********\n");
+}
 
 char **rand_args(int arg_count, size_t **arg_lens)
 {
@@ -133,6 +163,13 @@ gpointer thread_loop(gpointer data)
 
 int main(int argc, char **argv)
 {
+    char *cfg_path = NULL;
+    if(argc > 1)
+    {
+        cfg_path = argv[1];
+    }
+    init_and_desc_test(cfg_path);
+    
     random = g_rand_new ();
     thread_arr = g_ptr_array_new ();
 
