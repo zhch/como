@@ -180,7 +180,7 @@ static int io_set_fd_blocking(int fd, int blocking)
     
     if (fcntl(fd, F_SETFL, flags) == -1)
     {
-        log_error("fcntl(F_SETFL) failed");
+        log_error("io_set_fd_blocking(%d,%d) failed", fd, blocking);
         return -2;
     }
     return 0;
@@ -604,7 +604,6 @@ static void client_cb_read(struct ev_loop *loop, struct ev_io *watcher, int reve
             }
             else if(client->pro_status == PROTOCOL_ERR)
             {
-                printf("----------zc:invalid protocol from client, disconnect\n");
                 log_warn("invalid protocol from client, disconnect");
                 client_close(client);
                 break;
@@ -656,7 +655,7 @@ static RESPCommand *reader_get_cmd_stru(RESPReader *reader, RESPClient *client, 
         }
         mm_free(stru->arg_lens);
         mm_free(stru->args);
-        stru->args = mm_malloc(stru->args_cap);
+        stru->args = mm_malloc(sizeof(size_t) * (stru->args_cap));
         stru->arg_lens = mm_malloc(sizeof(size_t) * (stru->args_cap));
     }
     return stru;
