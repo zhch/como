@@ -112,45 +112,53 @@ gpointer thread_loop(gpointer data)
         size_t *arg_lens;
         char **args = rand_args(arg_count, &arg_lens);
         redisReply *reply = (redisReply *)redisCommandArgv(c, arg_count, (const char **)args, arg_lens);
-        if(reply->type == REDIS_REPLY_ARRAY)
+        if(reply != NULL)
         {
-            if(reply->elements == arg_count)
+            if(reply->type == REDIS_REPLY_ARRAY)
             {
-                bool match = true;
-                for(int j = 0; j<arg_count; j++)
+                if(reply->elements == arg_count)
                 {
-                    if((reply->element[j]->len == arg_lens[j]) && (memcmp(reply->element[j]->str, args[j], arg_lens[j]) == 0))
+                    bool match = true;
+                    for(int j = 0; j<arg_count; j++)
                     {
-
+                        if((reply->element[j]->len == arg_lens[j]) && (memcmp(reply->element[j]->str, args[j], arg_lens[j]) == 0))
+                        {
+                            
+                        }
+                        else
+                        {
+                            match = false;
+                            printf("WRONG reply at [%d]\n", j);
+                            break;
+                        }
+                    }
+                    
+                    if(!match)
+                    {
+                        break;
                     }
                     else
                     {
-                        match = false;
-                        printf("WRONG reply at [%d]\n", j);
-                        break;
+                        printf("[%ld][%d] args req PASS\n",i, arg_count);
                     }
-                }
-                
-                if(!match)
-                {
-                    break;
+                    
                 }
                 else
                 {
-                    printf("[%ld][%d] args req PASS\n",i, arg_count);
+                    printf("WRONG reply length: [%lu], arg_count [%d]\n",reply->elements,arg_count);
+                    
                 }
-                
             }
             else
             {
-                printf("WRONG reply length: [%lu], arg_count [%d]\n",reply->elements,arg_count);
-
+                printf("WRONG reply type: [%d]\n",reply->type);
+                break;
             }
         }
         else
         {
-            printf("WRONG reply type: [%d]\n",reply->type);
-            break;
+            printf("ERROR: [%d][%s]\n", c->err, c->errstr);
+
         }
         
         mm_free(arg_lens);
