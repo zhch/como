@@ -710,8 +710,6 @@ static void reader_return_cmd_stru(RESPReader *reader, RESPCommand *cmd)
     }
 }
 
-
-
 static RESPReaderTask *reader_task_new(RESPReaderTaskType type, void *data, size_t data_len)
 {
     RESPReaderTask *result = (RESPReaderTask *)mm_malloc(sizeof(RESPReaderTask));
@@ -737,14 +735,6 @@ static void reader_task_new_client(void *data, size_t data_len)
     
     g_hash_table_add (client->reader->clients,client);
 }
-
-/*
-static void reader_task_reply_ready(void *data, size_t data_len)
-{
-    RESPClient *client = (RESPClient *)data;
-    client_flush_cmd_replies(client);
-}
-*/
 
 static void reader_cb_task(struct ev_loop *loop, ev_async * watcher, int revents)
 {
