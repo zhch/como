@@ -32,9 +32,34 @@
 #include "mm.h"
 #include "resp.h"
 #include <stdio.h>
+#include <glib.h>
+#include <stdbool.h>
 
 static int port = 1234;
-static int reader_count = 1;
+static int reader_count = 2;
+
+static void init_and_desc_test(char *cfg_path)
+{
+    if(cfg_path != NULL)
+    {
+        GKeyFile *cfg_file = g_key_file_new();
+        gboolean ret = g_key_file_load_from_file (cfg_file, cfg_path, G_KEY_FILE_NONE, NULL);
+        if(ret == false)
+        {
+            printf("try to load cfgs from [%s] failed",cfg_path);
+            exit(0);
+        }
+        
+        port = g_key_file_get_integer(cfg_file, "test_resp_echo", "port",NULL);
+        reader_count = g_key_file_get_integer(cfg_file, "test_resp_echo", "reader",NULL);
+        g_key_file_free(cfg_file);
+    }
+    
+    printf("******* test_resp_client STARTED ********\n");
+    printf("         port: %d\n", port);
+    printf(" reader_count: %d\n",reader_count);
+    printf("******* ************************ ********\n");
+}
 
 void echo(RESPConnection *con, RESPCommand *cmd)
 {
@@ -50,6 +75,13 @@ void echo(RESPConnection *con, RESPCommand *cmd)
 
 int main(int argc, char **argv)
 {
+    char *cfg_path = NULL;
+    if(argc > 1)
+    {
+        cfg_path = argv[1];
+    }
+    init_and_desc_test(cfg_path);
+    
     RESPServer *srv = resp_new_server(port, echo, reader_count);
     resp_server_start(srv);
 }
