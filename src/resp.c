@@ -63,7 +63,7 @@ typedef enum resp_protocol_status
     ARG, ARG_LF
 }RESPProtocolStatus;
 
-typedef enum resp_reader_task_type{NEW_CLIENT} RESPReaderTaskType;
+typedef enum resp_reader_task_type{NEW_CLIENT, REPLY_READY} RESPReaderTaskType;
 typedef struct resp_reader RESPReader;
 typedef struct resp_reader_task RESPReaderTask;
 typedef struct resp_client_buff RESPClientBuffer;
@@ -111,6 +111,7 @@ struct resp_cmd
     char *reply;
     size_t reply_cap;
     size_t reply_size;
+    size_t reply_ptr;
     
     RESPConnection conn;
 };
@@ -545,23 +546,36 @@ static void client_flush_cmd_replies(RESPClient *client)
     RESPCommand *cmd = (RESPCommand *)g_queue_peek_head (client->req_queue);
     while(cmd != NULL && (cmd->reply_size) > 0)
     {
-        cmd = (RESPCommand *)g_queue_pop_head (client->req_queue);
-        ssize_t write_result = write(client->fd, cmd->reply, cmd->reply_size);
+        ssize_t write_result = write(client->fd, (cmd->reply) + (cmd->reply_ptr), (cmd->reply_size) - (cmd->reply_ptr));
+        
         if(write_result < 0)
         {
-            log_error("try to write [%lu] bytes of reply failed, return=[%ld], msg=[%s]",cmd->reply_size,write_result,strerror(errno));
+            cmd = (RESPCommand *)g_queue_pop_head (client->req_queue);
+            reader_return_cmd_stru(client->reader, cmd);
+            log_error("try to write [%lu] bytes of reply failed, return=[%ld], msg=[%s], disconnect",cmd->reply_size,write_result,strerror(errno));
+            client_close(client);
+            break;
         }
-        
-        client_buff_in_set_free(client, cmd->args[cmd->args_count - 1] + cmd->arg_lens[cmd->args_count-1] + 2);
-        reader_return_cmd_stru(client->reader, cmd);
-        cmd = (RESPCommand *)g_queue_peek_head (client->req_queue);
+        else
+        {
+            (cmd->reply_ptr) += write_result;
+            if((cmd->reply_ptr) < (cmd->reply_size))
+            {
+                break;
+            }
+            else
+            {
+                client_buff_in_set_free(client, cmd->args[cmd->args_count - 1] + cmd->arg_lens[cmd->args_count-1] + 2);
+                cmd = (RESPCommand *)g_queue_pop_head (client->req_queue);
+                reader_return_cmd_stru(client->reader, cmd);
+                cmd = (RESPCommand *)g_queue_peek_head (client->req_queue);
+            }
+        }
     }
 }
 
-static void client_cb_read(struct ev_loop *loop, struct ev_io *watcher, int revents)
+static void client_read(RESPClient *client)
 {
-    RESPClient *client = (RESPClient *)(watcher->data);
-    
     while(true)
     {
         if(client_buff_in_space(client) == 0)
@@ -614,8 +628,26 @@ static void client_cb_read(struct ev_loop *loop, struct ev_io *watcher, int reve
             break;
         }
     }
-    
+}
+
+static void client_write(RESPClient *client)
+{
     client_flush_cmd_replies(client);
+}
+
+static void client_callback(struct ev_loop *loop, struct ev_io *watcher, int revents)
+{
+    RESPClient *client = (RESPClient *)(watcher->data);
+   
+    if(revents & EV_READ)
+    {
+        client_read(client);
+    }
+    
+    if(revents & EV_WRITE)
+    {
+        client_write(client);
+    }
 }
 
 static RESPCommand *reader_get_cmd_stru(RESPReader *reader, RESPClient *client, size_t min_cap)
@@ -635,11 +667,12 @@ static RESPCommand *reader_get_cmd_stru(RESPReader *reader, RESPClient *client, 
         stru->arg_lens = NULL;
         stru->reply = NULL;
         stru->reply_cap = 0;
-        stru->reply_size = 0;
     }
     
     stru->conn.client = client;
-
+    stru->reply_size = 0;
+    stru->reply_ptr = 0;
+    
     if((stru->args_cap) < min_cap)
     {
         while((stru->args_cap) < min_cap)
@@ -698,12 +731,20 @@ static void reader_task_new_client(void *data, size_t data_len)
     
     net_set_socket_tcp_no_delay(client->fd);
     io_set_fd_blocking(client->fd, 0);
-    ev_io_init(&(client->watcher), client_cb_read, client->fd, EV_READ);
+    ev_io_init(&(client->watcher), client_callback, client->fd, EV_READ|EV_WRITE);
     ev_io_start(client->reader->loop, &(client->watcher));
     client->watcher.data = client;
     
     g_hash_table_add (client->reader->clients,client);
 }
+
+/*
+static void reader_task_reply_ready(void *data, size_t data_len)
+{
+    RESPClient *client = (RESPClient *)data;
+    client_flush_cmd_replies(client);
+}
+*/
 
 static void reader_cb_task(struct ev_loop *loop, ev_async * watcher, int revents)
 {
@@ -727,6 +768,15 @@ static gpointer reader_loop (gpointer data)
     RESPReader *reader = (RESPReader *)data;
     do{}while(ev_run(reader->loop, 0));
     return NULL;
+}
+
+static void reader_enqueue_task(RESPReader *reader, RESPReaderTask *task)
+{
+    g_mutex_lock(&(reader->task_queue_sync));
+    g_queue_push_tail(reader->task_queue, task);
+    g_mutex_unlock(&(reader->task_queue_sync));
+    
+    ev_async_send(reader->loop, &(reader->notifier));
 }
 
 static void accept_cb(struct ev_loop *loop, struct ev_io *watcher, int revents)
@@ -757,11 +807,7 @@ static void accept_cb(struct ev_loop *loop, struct ev_io *watcher, int revents)
     (srv->read_ptr) = ((srv->read_ptr) + 1) % (srv->reader_num);
   
     RESPReaderTask *task = reader_task_new(NEW_CLIENT, client, 0);
-    g_mutex_lock(&(client->reader->task_queue_sync));
-    g_queue_push_tail (client->reader->task_queue, task);
-    g_mutex_unlock(&(client->reader->task_queue_sync));
-    
-    ev_async_send(client->reader->loop, &(client->reader->notifier));
+    reader_enqueue_task(client->reader, task);
 }
 
 RESPServer *resp_new_server(int port, RESPCommandProcess *proc, int readers)
