@@ -55,7 +55,7 @@ static void init_and_desc_test(char *cfg_path)
         g_key_file_free(cfg_file);
     }
     
-    printf("******* test_resp_client STARTED ********\n");
+    printf("******* test_resp_echo STARTED ********\n");
     printf("         port: %d\n", port);
     printf(" reader_count: %d\n",reader_count);
     printf("******* ************************ ********\n");
