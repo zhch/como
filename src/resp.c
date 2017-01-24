@@ -46,10 +46,12 @@
 #include <string.h>
 #include <stdbool.h>
 #include <errno.h>
-
+#include <unistd.h>
+#include <sys/syscall.h>
 /*
     TODOs:
         [1]make reader task queue as lockless circular buffer
+        [2]pooling and reuse client objects as RESPCommands like
  */
 
 typedef struct resp_client RESPClient;
@@ -81,6 +83,7 @@ struct resp_client_buff
 
 struct resp_client
 {
+    bool is_closed;
     RESPReader *reader;
     int fd;
     struct sockaddr_in *add;
@@ -331,19 +334,7 @@ static inline void cmd_serialize_list(RESPCommand *cmd, char **vals, size_t *v_s
     cmd->reply_size = ptr;
 }
 
-static RESPClient *client_new(RESPReader *reader, int fd, struct sockaddr_in *add)
-{
-    RESPClient *result = (RESPClient *)mm_malloc(sizeof(RESPClient));
-    result->reader = reader;
-    result->fd = fd;
-    result->add = add;
-    return result;
-}
 
-static void client_close(RESPClient *client)
-{
-    
-}
 
 static inline void client_buff_in_init(RESPClient *client)
 {
@@ -354,6 +345,12 @@ static inline void client_buff_in_init(RESPClient *client)
     client->buff_in->free = 0;
     client->buff_in->buff = (char *)mm_malloc(client->buff_in->cap);
     client->buff_in->global_offset = 0;
+}
+
+static inline void client_buff_in_destory(RESPClient *client)
+{
+    mm_free(client->buff_in->buff);
+    mm_free(client->buff_in);
 }
 
 static inline bool client_buff_in_compact(RESPClient *client)
@@ -541,6 +538,43 @@ static void client_buff_in_process(RESPClient *client)
     client->pro_cmd = cmd;
 }
 
+static RESPClient *client_new(RESPReader *reader, int fd, struct sockaddr_in *add)
+{
+    RESPClient *result = (RESPClient *)mm_malloc(sizeof(RESPClient));
+    result->is_closed = false;
+    result->reader = reader;
+    result->fd = fd;
+    result->add = add;
+    return result;
+}
+
+static void client_destory(RESPClient *client)
+{
+    if(client->is_closed)
+    {
+        RESPCommand *cmd = (RESPCommand *)g_queue_pop_head (client->req_queue);
+        while(cmd != NULL)
+        {
+            reader_return_cmd_stru(client->reader, cmd);
+            cmd = (RESPCommand *)g_queue_pop_head(client->req_queue);
+        }
+        g_queue_free(client->req_queue);
+        client->req_queue = NULL;
+        
+        client_buff_in_destory(client);
+        mm_free(client);
+    }
+}
+
+static void client_close(RESPClient *client)
+{
+    g_hash_table_remove(client->reader->clients, client);
+    ev_io_stop(client->reader->loop, &(client->watcher));
+    client->watcher.data = NULL;
+    close(client->fd);
+    client->is_closed = true;
+}
+
 static void client_flush_cmd_replies(RESPClient *client)
 {
     RESPCommand *cmd = (RESPCommand *)g_queue_peek_head (client->req_queue);
@@ -595,6 +629,7 @@ static void client_read(RESPClient *client)
         else if(read_count == 0)
         {
             client_close(client);   //EOF
+            break;
         }
         else
         {
@@ -602,6 +637,7 @@ static void client_read(RESPClient *client)
             {
                 log_warn("read client failed [%s], disconnect",strerror(errno));
                 client_close(client);
+                break;
             }
         }
         
@@ -635,18 +671,23 @@ static void client_write(RESPClient *client)
     client_flush_cmd_replies(client);
 }
 
-static void client_callback(struct ev_loop *loop, struct ev_io *watcher, int revents)
+static void client_cb(struct ev_loop *loop, struct ev_io *watcher, int revents)
 {
     RESPClient *client = (RESPClient *)(watcher->data);
-   
-    if(revents & EV_READ)
+
+    if(!(client->is_closed) && (revents & EV_WRITE))
+    {
+        client_write(client);
+    }
+    
+    if(!(client->is_closed) && (revents & EV_READ))
     {
         client_read(client);
     }
-    
-    if(revents & EV_WRITE)
+
+    if(client->is_closed)
     {
-        client_write(client);
+        client_destory(client);
     }
 }
 
@@ -729,10 +770,9 @@ static void reader_task_new_client(void *data, size_t data_len)
     
     net_set_socket_tcp_no_delay(client->fd);
     io_set_fd_blocking(client->fd, 0);
-    ev_io_init(&(client->watcher), client_callback, client->fd, EV_READ|EV_WRITE);
+    ev_io_init(&(client->watcher), client_cb, client->fd, EV_READ|EV_WRITE);
     ev_io_start(client->reader->loop, &(client->watcher));
     client->watcher.data = client;
-    
     g_hash_table_add (client->reader->clients,client);
 }
 
