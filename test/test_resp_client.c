@@ -90,7 +90,7 @@ char **rand_args(int arg_count, size_t **arg_lens)
 
 gpointer thread_loop(gpointer data)
 {
-    struct timeval timeout = { 1, 500000 }; // 1.5 seconds
+    struct timeval timeout = {10, 500000 }; // 1.5 seconds
     redisContext *c = redisConnectWithTimeout(server_ip, server_port, timeout);
     if (c == NULL || c->err)
     {
